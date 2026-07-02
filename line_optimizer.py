@@ -1,4 +1,3 @@
-# Find the cord from the current point to another point on the circle with the highest value
 from consts import BOOST_FOR_MORE_POINTS, PIXEL_VALUE_SUBTRACT
 from point_generator import points_on_line
 
@@ -13,9 +12,11 @@ def bonus_for_more_points(num_points: int) -> float:
 def value_of_points(image, points) -> float:
     avg = 0.0
     num_points = 0
+    x_max = image.shape[1]
+    y_max = image.shape[0]
     for x, y in points:
         ix, iy = int(round(x)), int(round(y))
-        if 0 <= ix < image.shape[1] and 0 <= iy < image.shape[0]:
+        if 0 <= ix < x_max and 0 <= iy < y_max:
             r, g, b = map(int, image[iy, ix])
             # Compute potental effect of adjusting pixel values
             r_adj = (
@@ -43,6 +44,7 @@ def value_of_points(image, points) -> float:
     return avg
 
 
+# Find the cord from the current point to another point on the circle with the highest value
 def find_best_cord(image, circ_points, curr_circ_point, min_cord_distance=None):
     best_value = float("-inf")
     best_point = None

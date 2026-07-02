@@ -1,11 +1,9 @@
 from PIL import Image
 import numpy as np
 
-from consts import image_path
 
-
-def open_image(image_name):
-    with Image.open(image_path(image_name)) as img:
+def open_image(image_path):
+    with Image.open(image_path) as img:
         img = img.convert("RGB")
 
     # Convert to NumPy array (shape: height x width x 3)
