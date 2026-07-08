@@ -52,8 +52,11 @@ def find_best_cord(image, circ_points, curr_circ_point, min_cord_distance=None):
     for i in range(num_points):
         if i == curr_circ_point:
             continue
-        if min_cord_distance and abs(i - curr_circ_point) < min_cord_distance:
-            continue
+        if min_cord_distance:
+            direct_distance = abs(i - curr_circ_point)
+            circular_distance = min(direct_distance, num_points - direct_distance)
+            if circular_distance < min_cord_distance:
+                continue
         point_generator = points_on_line(
             circ_points[curr_circ_point], circ_points[i]
         )

@@ -4,28 +4,16 @@ from time import time
 from image_eater import open_image
 from line_optimizer import find_best_cord
 from point_generator import generate_circle_points, points_on_line
-from points_printer import plot_path_ascii, plot_points_ascii
 from line_renderer import render_path
-from preprocessor import invert_image, preprocess_image_edge, bump_contrast, squareizer
-from consts import PIXEL_VALUE_SUBTRACT, output_path, output_progress_path
+from preprocessor import load_image, invert_image, preprocess_image_edge, bump_contrast, squareizer, resize_to_max, export_adjusted_image
+from consts import ARCHIVE_DIR, PIXEL_VALUE_SUBTRACT, LINE_OPACITY, NUM_CORDS, POINTS_ON_CIRCLE, RADIUS_SCALE, LOG_EVERY_N, TARGET_BLACK_PIXELS, EDGE_PREPROCESS, BUMP_CONTRAST, FORCE_SQUARE, EXPORT_IMAGE_EVERY, MIN_CORD_DISTANCE, DEFAULT_MAX_SIZE, output_path, output_progress_path
 import os
 import argparse
+import matplotlib.pyplot as plt
 
 
-POINTS_ON_CIRCLE = 240
-RADIUS_SCALE = 1.0
-NUM_CORDS = 5000
-LOG_EVERY_N = 50
-LINE_OPACITY = 0.25  # PIXEL_VALUE_SUBTRACT / 255.0
-TARGET_BLACK_PIXELS = False
-EDGE_PREPROCESS = False
-BUMP_CONTRAST = True
-FORCE_SQUARE = True  # If true, will crop the image to a square before processing
-EXPORT_IMAGE_EVERY = 100
-# Minimum distance between points on the circle to consider a cord
-MIN_CORD_DISTANCE = 40
-SOLVE_COMMAND = "solve"
 RECONSTRUCT_COMMAND = "reconstruct"
+SOLVE_COMMAND = "solve"
 
 
 assert 0.0 < LINE_OPACITY <= 1.0, "LINE_OPACITY must be in (0.0, 1.0]"
@@ -38,16 +26,29 @@ def parse_args():
     )
     # Arguments for both subcommands
     parser.add_argument(
-        "--line_opacity",
+        "--line-opacity",
         type=float,
         default=LINE_OPACITY,
         help="Opacity of the lines drawn (0.0 to 1.0)",
     )
     parser.add_argument(
-        "--num_cords",
+        "--num-cords",
         type=int,
         default=NUM_CORDS,
         help="Number of cords to draw. If reconstructing from a path, the number of cords in the path will be truncated to this value, or used entirely if this value is greater than the number of cords in the path",
+    )
+    parser.add_argument(
+        "--max-size",
+        type=int,
+        default=DEFAULT_MAX_SIZE,
+        metavar="PIXELS",
+        help="Maximum input image edge size; image is downscaled to fit within a square",
+    )
+    parser.add_argument(
+        "--pixel-value-subtract",
+        type=int,
+        default=PIXEL_VALUE_SUBTRACT,
+        help="Amount subtracted from each RGB channel along a selected cord",
     )
 
     # Define subparsers for the two subcommands
@@ -66,55 +67,55 @@ def parse_args():
 
     # Arguments for solve subcommand
     parser_solve.add_argument(
-        "--points_on_circle",
+        "--points-on-circle",
         type=int,
         default=POINTS_ON_CIRCLE,
         help="Number of points on the circle",
     )
     parser_solve.add_argument(
-        "--radius_scale",
+        "--radius-scale",
         type=float,
         default=RADIUS_SCALE,
         help="Scale of the radius of the circle relative to the image size",
     )
     parser_solve.add_argument(
-        "--log_every_n",
+        "--log-every-n",
         type=int,
         default=LOG_EVERY_N,
         help="Log progress every n cords",
     )
     parser_solve.add_argument(
-        "--target_black_pixels",
+        "--target-black-pixels",
         action="store_true",
         default=TARGET_BLACK_PIXELS,
         help="If set, will target black pixels instead of white",
     )
     parser_solve.add_argument(
-        "--edge_preprocess",
+        "--edge-preprocess",
         action="store_true",
         default=EDGE_PREPROCESS,
         help="If set, will preprocess the image to detect edges",
     )
     parser_solve.add_argument(
-        "--bump_contrast",
+        "--bump-contrast",
         action="store_true",
         default=BUMP_CONTRAST,
         help="If set, will bump the contrast of the image",
     )
     parser_solve.add_argument(
-        "--force_square",
+        "--force-square",
         action="store_true",
         default=FORCE_SQUARE,
         help="If set, will crop the image to a square before processing",
     )
     parser_solve.add_argument(
-        "--export_image_every",
+        "--export-image-every",
         type=int,
         default=EXPORT_IMAGE_EVERY,
         help="Export an intermediate image every n cords",
     )
     parser_solve.add_argument(
-        "--min_cord_distance",
+        "--min-cord-distance",
         type=int,
         default=MIN_CORD_DISTANCE,
         help="Minimum distance between points on the circle to consider a cord",
@@ -145,6 +146,13 @@ def clamp(value, min_value, max_value):
     return max(min_value, min(value, max_value))
 
 
+def make_dirs(output_dir, progress_dir):
+    shutil.rmtree(output_dir, ignore_errors=True)
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(progress_dir, exist_ok=True)
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+
+
 def export_image(path_points, width, height, output_dir, line_opacity):
     # Render the path to an image and save it
     img = render_path(
@@ -154,6 +162,7 @@ def export_image(path_points, width, height, output_dir, line_opacity):
     )
     output_path = os.path.join(output_dir, f"output_{len(path_points) - 1}.png")
     img.save(output_path)
+    return output_path
 
 
 def export_path(path_points, output_dir):
@@ -163,11 +172,32 @@ def export_path(path_points, output_dir):
             f.write(f"{point[0]},{point[1]}\n")
 
 
-def make_dirs(output_dir, progress_dir):
-    os.makedirs(output_path(), exist_ok=True)
-    shutil.rmtree(output_dir, ignore_errors=True)
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(progress_dir, exist_ok=True)
+def export_best_values_graph(best_values, output_dir):
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(best_values, marker="o", markersize=2)
+    plt.title("Best Values Over Time")
+    plt.xlabel("Cord Number")
+    plt.ylabel("Best Value")
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "best_values.png"))
+    plt.close()
+
+
+# Saves an image to the archive directory with a log of the parameters used to generate it
+def archive_image(image_path, image_name, args):
+    # copy image into archive dir with timestamp
+    timestamp = int(time())
+    filename = f"{timestamp}_{image_name}"
+    shutil.copy(image_path, os.path.join(ARCHIVE_DIR, filename))
+    # append parameters to a text file in the archive dir
+    with open(os.path.join(ARCHIVE_DIR, "archive_log.txt"), "a") as f:
+        f.write(f"Image: {filename}\n")
+        f.write(f"Parameters:\n")
+        for arg in vars(args):
+            f.write(f"  {arg}: {getattr(args, arg)}\n")
+        f.write("\n")
 
 
 def reconstruct_image(path_file, output_dir, num_cords, line_opacity):
@@ -188,24 +218,36 @@ def reconstruct_image(path_file, output_dir, num_cords, line_opacity):
     export_image(path_points, width, height, output_dir, line_opacity)
 
 
+def time_remaining(start_time, total_cords, cords_completed):
+    elapsed_time = time() - start_time
+    if cords_completed == 0:
+        return float("inf")
+    estimated_total_time = (elapsed_time / cords_completed) * total_cords
+    return estimated_total_time - elapsed_time
+
+
 def main():
     args = parse_args()
 
     if args.command == SOLVE_COMMAND:
-        img_path = args.image_path
-        base_name = os.path.splitext(os.path.basename(img_path))[0]
+        original_file_name = os.path.basename(args.image_path)
+        base_name = os.path.splitext(os.path.basename(args.image_path))[0]
         output_dir = output_path(base_name)
         progress_dir = output_progress_path(base_name)
         make_dirs(output_dir, progress_dir)
 
+        preprocessed_img = load_image(args.image_path)
         if args.target_black_pixels:
-            img_path = invert_image(img_path, output_dir)
+            preprocessed_img = invert_image(preprocessed_img)
         if args.edge_preprocess:
-            img_path = preprocess_image_edge(img_path, output_dir)
+            preprocessed_img = preprocess_image_edge(preprocessed_img)
         if args.bump_contrast:
-            img_path = bump_contrast(img_path, output_dir)
+            preprocessed_img = bump_contrast(preprocessed_img)
         if args.force_square:
-            img_path = squareizer(img_path, output_dir)
+            preprocessed_img = squareizer(preprocessed_img)
+        preprocessed_img = resize_to_max(preprocessed_img, (args.max_size, args.max_size))
+
+        adjusted_image_path = export_adjusted_image(preprocessed_img, args.image_path, output_dir)
     elif args.command == RECONSTRUCT_COMMAND:
         # dir that the path file is in will be used as the output dir
         output_dir = os.path.dirname(args.path_file)
@@ -214,7 +256,7 @@ def main():
     else:
         raise ValueError(f"Unknown command: {args.command}")
 
-    image = open_image(img_path)
+    image = open_image(adjusted_image_path)
 
     assert image.shape[2] == 3, "Image must be RGB"
     (height, width, _) = image.shape
@@ -232,6 +274,7 @@ def main():
     
     start_time = time()
     last_log_time = start_time
+    best_values = []
     print(f"Starting computation of {args.num_cords} cords")
     for nth_cord in range(args.num_cords):
         # Check that all pixels are not zero
@@ -243,6 +286,7 @@ def main():
             image, circ_points, curr_circ_point, min_cord_distance=args.min_cord_distance
         )
         path.append(best_point)
+        best_values.append(best_value)
 
         # Subtract a small value from the points along the cord to encourage exploration
         point_generator = points_on_line(
@@ -252,15 +296,15 @@ def main():
             ix, iy = int(round(point[0])), int(round(point[1]))
             if 0 <= ix < image.shape[1] and 0 <= iy < image.shape[0]:
                 r, g, b = image[iy, ix]
-                r = clamp(int(r) - PIXEL_VALUE_SUBTRACT, 0, 255)
-                g = clamp(int(g) - PIXEL_VALUE_SUBTRACT, 0, 255)
-                b = clamp(int(b) - PIXEL_VALUE_SUBTRACT, 0, 255)
+                r = clamp(int(r) - args.pixel_value_subtract, 0, 255)
+                g = clamp(int(g) - args.pixel_value_subtract, 0, 255)
+                b = clamp(int(b) - args.pixel_value_subtract, 0, 255)
                 image[iy, ix] = (r, g, b)
 
         curr_circ_point = best_point
         if (nth_cord + 1) % args.log_every_n == 0:
             print(
-                f"Completed {100 * (nth_cord + 1) / args.num_cords}% ({nth_cord + 1} / {args.num_cords}) of total cords in {time() - last_log_time:.2f} seconds"
+                f"Completed {100 * (nth_cord + 1) / args.num_cords}% ({nth_cord + 1} / {args.num_cords}) of total cords in {time() - last_log_time:.2f} seconds (estimated time remaining: {time_remaining(start_time, args.num_cords, nth_cord + 1):.2f} seconds)"
             )
             last_log_time = time()
 
@@ -272,9 +316,11 @@ def main():
             )
 
     path_points = [circ_points[i] for i in path]
-    export_image(path_points, width, height, output_dir, args.line_opacity)
+    final_image_path = export_image(path_points, width, height, output_dir, args.line_opacity)
     print("Exported final image")
     export_path(path_points, output_dir)
+    export_best_values_graph(best_values, output_dir)
+    archive_image(final_image_path, original_file_name, args)
 
 
 if __name__ == "__main__":

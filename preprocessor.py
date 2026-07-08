@@ -2,59 +2,56 @@ import cv2
 import os
 
 
-def append_suffix_to_filename(image_path, suffix):
-    filename = os.path.basename(image_path)
-    [name, extension] = os.path.splitext(filename)
-    return f"{name}_{suffix}{extension}"
-
-
-def preprocess_image_edge(image_path, output_dir):
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise ValueError(f"Image at path \"{image_path}\" could not be loaded.")
-    edges = cv2.Canny(img, 100, 200)
-    new_filename = append_suffix_to_filename(image_path, "edges")
-    new_path = os.path.join(output_dir, new_filename)
-    cv2.imwrite(new_path, edges)
-    return new_path
-
-
-def invert_image(image_path, output_dir):
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise ValueError(f"Image at path \"{image_path}\" could not be loaded.")
-    inverted_img = cv2.bitwise_not(img)
-    new_filename = append_suffix_to_filename(image_path, "inverted")
-    new_path = os.path.join(output_dir, new_filename)
-    cv2.imwrite(new_path, inverted_img)
-    return new_path
-
-
-def bump_contrast(image_path, output_dir, clip_limit=2.0, tile_grid_size=(8, 8)):
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise ValueError(f"Image at path \"{image_path}\" could not be loaded.")
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    contrast_img = clahe.apply(img)
-    new_filename = append_suffix_to_filename(image_path, "bumped_contrast")
-    new_path = os.path.join(output_dir, new_filename)
-    cv2.imwrite(new_path, contrast_img)
-    return new_path
-
-# Takes an image of arbitrary dimensions and saves a square version of it, cropping the longer dimension to match the shorter one. Returns the path to the new image.
-def squareizer(image_path, output_dir):
+def load_image(image_path):
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError(f"Image at path \"{image_path}\" could not be loaded.")
+    return img
+
+
+def preprocess_image_edge(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+    return cv2.Canny(gray, 100, 200)
+
+
+def invert_image(img):
+    return cv2.bitwise_not(img)
+
+
+def bump_contrast(img, clip_limit=2.0, tile_grid_size=(8, 8)):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    return clahe.apply(gray)
+
+
+def squareizer(img):
     height, width = img.shape[:2]
     if height == width:
-        print(f"Image at path \"{image_path}\" is already square. No changes made.")
-        return image_path  # Already square
+        return img
     min_dim = min(height, width)
     start_x = (width - min_dim) // 2
     start_y = (height - min_dim) // 2
-    square_img = img[start_y:start_y + min_dim, start_x:start_x + min_dim]
-    new_filename = append_suffix_to_filename(image_path, "squared")
-    new_path = os.path.join(output_dir, new_filename)
-    cv2.imwrite(new_path, square_img)
-    return new_path
+    return img[start_y:start_y + min_dim, start_x:start_x + min_dim]
+
+
+def resize_to_max(img, max_size):
+    max_width, max_height = max_size
+    height, width = img.shape[:2]
+
+    scale = min(max_width / width, max_height / height)
+    if scale >= 1:
+        return img
+
+    print(f"Scaling image down by {scale:.2f} to fit within {max_width}x{max_height}")
+    new_width = int(width * scale)
+    new_height = int(height * scale)
+    return cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+
+def export_adjusted_image(img, source_image_path, output_dir):
+    source_name = os.path.basename(source_image_path)
+    name, ext = os.path.splitext(source_name)
+    extension = ext if ext else ".png"
+    adjusted_path = os.path.join(output_dir, f"{name}_adjusted{extension}")
+    cv2.imwrite(adjusted_path, img)
+    return adjusted_path

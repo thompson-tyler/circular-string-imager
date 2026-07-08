@@ -1,6 +1,8 @@
 .DS_Store
 env/
 __pycache__/
+.vscode/
 images/
 input/
 output/
+archive/
