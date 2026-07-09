@@ -1,15 +1,10 @@
-from PIL import Image
 import numpy as np
+from PIL import Image
 
 
 def open_image(image_path):
     with Image.open(image_path) as img:
-        img = img.convert("RGB")
+        img = img.convert("L")  # Convert to grayscale
 
-    # Convert to NumPy array (shape: height x width x 3)
-    arr = np.array(img)
-
-    # Convert to array of RGB tuples (shape: height x width)
-    rgb_tuples = np.apply_along_axis(lambda x: tuple(x), 2, arr)
-
-    return rgb_tuples
+    # Convert to NumPy array (shape: height x width)
+    return np.array(img)

@@ -1,12 +1,14 @@
 import random
 import shutil
+import sys
 from time import time
+from father_timer import FatherTimer
 from image_eater import open_image
 from line_optimizer import find_best_cord
 from point_generator import generate_circle_points, points_on_line
 from line_renderer import render_path
-from preprocessor import load_image, invert_image, preprocess_image_edge, bump_contrast, squareizer, resize_to_max, export_adjusted_image
-from consts import ARCHIVE_DIR, PIXEL_VALUE_SUBTRACT, LINE_OPACITY, NUM_CORDS, POINTS_ON_CIRCLE, RADIUS_SCALE, LOG_EVERY_N, TARGET_BLACK_PIXELS, EDGE_PREPROCESS, BUMP_CONTRAST, FORCE_SQUARE, EXPORT_IMAGE_EVERY, MIN_CORD_DISTANCE, DEFAULT_MAX_SIZE, output_path, output_progress_path
+from preprocessor import load_image, invert_image, bump_contrast, squareizer, resize_to_max, export_adjusted_image
+from consts import ARCHIVE_DIR, PIXEL_VALUE_SUBTRACT, LINE_OPACITY, NUM_CORDS, POINTS_ON_CIRCLE, RADIUS_SCALE, LOG_EVERY_N, TARGET_BLACK_PIXELS, BUMP_CONTRAST, FORCE_SQUARE, EXPORT_IMAGE_EVERY, MIN_CORD_DISTANCE, DEFAULT_MAX_SIZE, output_path, output_progress_path
 import os
 import argparse
 import matplotlib.pyplot as plt
@@ -91,12 +93,6 @@ def parse_args():
         help="If set, will target black pixels instead of white",
     )
     parser_solve.add_argument(
-        "--edge-preprocess",
-        action="store_true",
-        default=EDGE_PREPROCESS,
-        help="If set, will preprocess the image to detect edges",
-    )
-    parser_solve.add_argument(
         "--bump-contrast",
         action="store_true",
         default=BUMP_CONTRAST,
@@ -119,6 +115,11 @@ def parse_args():
         type=int,
         default=MIN_CORD_DISTANCE,
         help="Minimum distance between points on the circle to consider a cord",
+    )
+    parser_solve.add_argument(
+        "--multi-threaded",
+        action="store_true",
+        help="If set, will use multi-threading to evaluate points on the circle",
     )
     parser_solve.add_argument(
         "image_path",
@@ -173,7 +174,6 @@ def export_path(path_points, output_dir):
 
 
 def export_best_values_graph(best_values, output_dir):
-
     plt.figure(figsize=(10, 5))
     plt.plot(best_values, marker="o", markersize=2)
     plt.title("Best Values Over Time")
@@ -218,12 +218,25 @@ def reconstruct_image(path_file, output_dir, num_cords, line_opacity):
     export_image(path_points, width, height, output_dir, line_opacity)
 
 
-def time_remaining(start_time, total_cords, cords_completed):
-    elapsed_time = time() - start_time
+def time_remaining(elapsed_time, total_cords, cords_completed):
     if cords_completed == 0:
         return float("inf")
     estimated_total_time = (elapsed_time / cords_completed) * total_cords
     return estimated_total_time - elapsed_time
+
+
+def format_time(seconds):
+    if seconds < 60:
+        return f"{seconds:.2f} s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        seconds = seconds % 60
+        return f"{minutes} m, {seconds:.2f} s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = seconds % 60
+        return f"{hours} h, {minutes} m, {seconds:.2f} s"
 
 
 def main():
@@ -239,8 +252,6 @@ def main():
         preprocessed_img = load_image(args.image_path)
         if args.target_black_pixels:
             preprocessed_img = invert_image(preprocessed_img)
-        if args.edge_preprocess:
-            preprocessed_img = preprocess_image_edge(preprocessed_img)
         if args.bump_contrast:
             preprocessed_img = bump_contrast(preprocessed_img)
         if args.force_square:
@@ -258,8 +269,8 @@ def main():
 
     image = open_image(adjusted_image_path)
 
-    assert image.shape[2] == 3, "Image must be RGB"
-    (height, width, _) = image.shape
+    assert len(image.shape) == 2, "Image must be grayscale"
+    (height, width) = image.shape
     
     assert width == height, "Image must be square"
 
@@ -272,52 +283,55 @@ def main():
     curr_circ_point = rand_index(num_points)
     path = [curr_circ_point]
     
-    start_time = time()
-    last_log_time = start_time
-    best_values = []
+    print(f"Threading: {'enabled' if args.multi_threaded else 'disabled'}; GIL: {'enabled' if sys._is_gil_enabled() else 'disabled'}")
     print(f"Starting computation of {args.num_cords} cords")
+
+    ft = FatherTimer()
+    best_values = []
     for nth_cord in range(args.num_cords):
         # Check that all pixels are not zero
         if not image.any():
             print("All pixels are zero, stopping early")
             break
 
-        best_point, best_value = find_best_cord(
-            image, circ_points, curr_circ_point, min_cord_distance=args.min_cord_distance
-        )
+        with ft.timer("Computing best cord"):
+            best_point, best_value = find_best_cord(
+                image, circ_points, curr_circ_point, min_cord_distance=args.min_cord_distance, threaded=args.multi_threaded
+            )
         path.append(best_point)
         best_values.append(best_value)
 
-        # Subtract a small value from the points along the cord to encourage exploration
-        point_generator = points_on_line(
-            circ_points[curr_circ_point], circ_points[best_point]
-        )
-        for point in point_generator:
-            ix, iy = int(round(point[0])), int(round(point[1]))
-            if 0 <= ix < image.shape[1] and 0 <= iy < image.shape[0]:
-                r, g, b = image[iy, ix]
-                r = clamp(int(r) - args.pixel_value_subtract, 0, 255)
-                g = clamp(int(g) - args.pixel_value_subtract, 0, 255)
-                b = clamp(int(b) - args.pixel_value_subtract, 0, 255)
-                image[iy, ix] = (r, g, b)
+        with ft.timer("Adjusting pixel values along cord"):
+            # Subtract a small value from the points along the cord to encourage exploration
+            point_generator = points_on_line(
+                circ_points[curr_circ_point], circ_points[best_point]
+            )
+            for point in point_generator:
+                ix, iy = int(round(point[0])), int(round(point[1]))
+                if 0 <= ix < image.shape[1] and 0 <= iy < image.shape[0]:
+                    val = image[iy, ix]
+                    val = clamp(int(val) - args.pixel_value_subtract, 0, 255)
+                    image[iy, ix] = val
 
         curr_circ_point = best_point
         if (nth_cord + 1) % args.log_every_n == 0:
+            lap_time = ft.lap()
+            time_remaining_estimate = time_remaining(ft.elapsed_time(), args.num_cords, nth_cord + 1)
             print(
-                f"Completed {100 * (nth_cord + 1) / args.num_cords}% ({nth_cord + 1} / {args.num_cords}) of total cords in {time() - last_log_time:.2f} seconds (estimated time remaining: {time_remaining(start_time, args.num_cords, nth_cord + 1):.2f} seconds)"
+                f"Completed {100 * (nth_cord + 1) / args.num_cords}% ({nth_cord + 1} / {args.num_cords}) of " +
+                f"total cords in {FatherTimer.format_time(lap_time)} (estimated time remaining: " +
+                f"{FatherTimer.format_time(time_remaining_estimate)})"
             )
-            last_log_time = time()
 
-        if (nth_cord + 1) % args.export_image_every == 0:
-            path_points = [circ_points[i] for i in path]
-            export_image(path_points, width, height, progress_dir, args.line_opacity)
-            print(
-                f"Exported intermediate image at {100 * (nth_cord + 1) / args.num_cords}% ({nth_cord + 1} / {args.num_cords}) of total cords"
-            )
+        if args.export_image_every is not None and (nth_cord + 1) % args.export_image_every == 0:
+            with ft.timer("Exporting intermediate image"):
+                path_points = [circ_points[i] for i in path]
+                export_image(path_points, width, height, progress_dir, args.line_opacity)
+
+    ft.report()
 
     path_points = [circ_points[i] for i in path]
     final_image_path = export_image(path_points, width, height, output_dir, args.line_opacity)
-    print("Exported final image")
     export_path(path_points, output_dir)
     export_best_values_graph(best_values, output_dir)
     archive_image(final_image_path, original_file_name, args)
