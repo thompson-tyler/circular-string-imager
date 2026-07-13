@@ -7,7 +7,7 @@ from image_eater import open_image
 from line_optimizer import find_best_cord
 from point_generator import generate_circle_points, points_on_line
 from line_renderer import render_path
-from preprocessor import load_image, invert_image, bump_contrast, squareizer, resize_to_max, export_adjusted_image
+from preprocessor import load_image, invert_image, bump_contrast, squareizer, resize_to_max, export_adjusted_image, to_grayscale
 from consts import ARCHIVE_DIR, PIXEL_VALUE_SUBTRACT, LINE_OPACITY, NUM_CORDS, POINTS_ON_CIRCLE, RADIUS_SCALE, LOG_EVERY_N, TARGET_BLACK_PIXELS, BUMP_CONTRAST, FORCE_SQUARE, EXPORT_IMAGE_EVERY, MIN_CORD_DISTANCE, DEFAULT_MAX_SIZE, output_path, output_progress_path
 import os
 import argparse
@@ -239,6 +239,12 @@ def format_time(seconds):
         return f"{hours} h, {minutes} m, {seconds:.2f} s"
 
 
+def print_config(args):
+    print("Configuration:")
+    for arg in vars(args):
+        print(f"  {arg}: {getattr(args, arg)}")
+
+
 def main():
     args = parse_args()
 
@@ -250,6 +256,7 @@ def main():
         make_dirs(output_dir, progress_dir)
 
         preprocessed_img = load_image(args.image_path)
+        preprocessed_img = to_grayscale(preprocessed_img)
         if args.target_black_pixels:
             preprocessed_img = invert_image(preprocessed_img)
         if args.bump_contrast:
@@ -266,7 +273,6 @@ def main():
         return
     else:
         raise ValueError(f"Unknown command: {args.command}")
-
     image = open_image(adjusted_image_path)
 
     assert len(image.shape) == 2, "Image must be grayscale"
@@ -284,6 +290,7 @@ def main():
     path = [curr_circ_point]
     
     print(f"Threading: {'enabled' if args.multi_threaded else 'disabled'}; GIL: {'enabled' if sys._is_gil_enabled() else 'disabled'}")
+    print_config(args)
     print(f"Starting computation of {args.num_cords} cords")
 
     ft = FatherTimer()

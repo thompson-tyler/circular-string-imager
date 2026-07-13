@@ -29,18 +29,16 @@ def invert_image(img: ImageArray) -> ImageArray:
 def bump_contrast(img: ImageArray) -> ImageArray:
     pil_img = Image.fromarray(img)
 
-    gray = ImageOps.grayscale(pil_img)
-
     # A small blur can reduce noise amplification during equalization.
     blur_radius = 0.0
     if blur_radius > 0:
-        gray = gray.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        pil_img = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
-    gray = ImageOps.autocontrast(gray, cutoff=1)
-    gray = ImageOps.equalize(gray)
-    gray = ImageEnhance.Contrast(gray).enhance(1.15)
+    pil_img = ImageOps.autocontrast(pil_img, cutoff=1)
+    pil_img = ImageOps.equalize(pil_img)
+    pil_img = ImageEnhance.Contrast(pil_img).enhance(1.15)
 
-    return np.array(gray, dtype=np.uint8)
+    return np.array(pil_img, dtype=np.uint8)
 
 
 def squareizer(img: ImageArray) -> ImageArray:
@@ -51,6 +49,11 @@ def squareizer(img: ImageArray) -> ImageArray:
     start_x = (width - min_dim) // 2
     start_y = (height - min_dim) // 2
     return img[start_y:start_y + min_dim, start_x:start_x + min_dim]
+
+def to_grayscale(img: ImageArray) -> ImageArray:
+    pil_img = Image.fromarray(img)
+    gray = ImageOps.grayscale(pil_img)
+    return np.array(gray, dtype=np.uint8)
 
 
 def resize_to_max(img: ImageArray, max_size: tuple[int, int]) -> ImageArray:
