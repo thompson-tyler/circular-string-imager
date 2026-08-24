@@ -2,7 +2,6 @@ from os import path
 
 
 PIXEL_VALUE_SUBTRACT = 10
-BOOST_FOR_MORE_POINTS = False
 INPUT_DIR = "input/"
 OUTPUT_DIR = "output/"
 ARCHIVE_DIR = "archive/"
